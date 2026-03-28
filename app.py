@@ -2,7 +2,9 @@ import streamlit as st
 import segyio
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import pandas as pd
+from scipy.fft import fft, fftfreq
 
 # Professional Page Configuration
 st.set_page_config(
@@ -42,24 +44,27 @@ st.sidebar.subheader("Data Input")
 uploaded_file = st.sidebar.file_uploader("Upload Seismic Volume (.segy / .sgy)", type=["segy", "sgy"])
 
 if st.sidebar.button("Generate Demo Seismic Data"):
-    # Create a synthetic structured dataset
     t = np.linspace(0, 2000, 500)
     data = np.zeros((200, 500))
     for i in range(8):
         depth = np.random.randint(50, 450)
         amp = np.random.uniform(0.5, 1.0)
-        data[:, depth:depth+8] += amp * np.sin(2 * np.pi * 0.04 * t[depth:depth+8])
+        # Mix of different frequencies for the demo
+        freq = np.random.uniform(20, 45) 
+        data[:, depth:depth+8] += amp * np.sin(2 * np.pi * freq * (t[depth:depth+8]/1000))
     st.session_state['demo_data'] = data
     st.session_state['data_source'] = "Synthetic Demo"
 
 # Data Loading Logic
 data_to_plot = None
+dt = 0.004 # Default 4ms sampling interval
 if uploaded_file is not None:
     with open("temp_data.segy", "wb") as f:
         f.write(uploaded_file.getbuffer())
     try:
         with segyio.open("temp_data.segy", "r", ignore_geometry=False) as f:
             data_to_plot = f.iline[f.ilines[len(f.ilines)//2]].T
+            dt = segyio.tools.dt(f) / 1e6 # Convert microseconds to seconds
     except:
         st.error("Format Error.")
 elif 'demo_data' in st.session_state:
@@ -67,34 +72,28 @@ elif 'demo_data' in st.session_state:
 
 # Main Workspace
 if data_to_plot is not None:
-    st.title("Seismic Interpretation & Analytics")
+    st.title("Seismic Interpretation & Advanced Analytics")
     
     col_tools, col_main = st.columns([1, 4])
     
     with col_tools:
         st.subheader("Controls")
         horizon_name = st.text_input("Active Horizon", "Target_Reservoir")
-        
         if st.button("Reset Session"):
             st.session_state['picks'] = pd.DataFrame(columns=['Trace', 'Time', 'Amplitude', 'Horizon'])
             st.rerun()
-            
-        st.info("Tip: Use the 'Box Select' or 'Lasso' tool on the right to pick reflectors.")
+        st.info("Select data points to view the Frequency Spectrum.")
 
     with col_main:
         vm = np.percentile(data_to_plot, 98)
-        
-        # Main Seismic Plot
         fig_seismic = px.imshow(
             data_to_plot,
             color_continuous_scale='RdBu',
             zmin=-vm, zmax=vm,
-            labels=dict(x="Trace Index", y="Two-Way Time (ms)", color="Amplitude"),
+            labels=dict(x="Trace Index", y="Time (ms)", color="Amplitude"),
             aspect='auto'
         )
-        fig_seismic.update_layout(template='plotly_dark', height=550, margin=dict(l=10, r=10, t=30, b=10))
-
-        # Event Capture
+        fig_seismic.update_layout(template='plotly_dark', height=500, margin=dict(l=10, r=10, t=30, b=10))
         event_data = st.plotly_chart(fig_seismic, on_select="rerun", key="seismic_plot", use_container_width=True)
         
         if event_data and "selection" in event_data:
@@ -102,44 +101,44 @@ if data_to_plot is not None:
             if points:
                 new_picks = []
                 for p in points:
-                    # Capture coordinate and the specific amplitude value at that point
-                    trace_idx = int(p['x'])
-                    time_idx = int(p['y'])
-                    # We need to map time_idx to the actual array index safely
+                    trace_idx, time_idx = int(p['x']), int(p['y'])
                     val = data_to_plot[time_idx, trace_idx]
                     new_picks.append({'Trace': trace_idx, 'Time': time_idx, 'Amplitude': val, 'Horizon': horizon_name})
-                
-                new_df = pd.DataFrame(new_picks)
-                st.session_state['picks'] = pd.concat([st.session_state['picks'], new_df]).drop_duplicates()
+                st.session_state['picks'] = pd.concat([st.session_state['picks'], pd.DataFrame(new_picks)]).drop_duplicates()
 
-    # Analytics Section (Only shows if data is picked)
+    # Analytics Section
     if not st.session_state['picks'].empty:
         st.divider()
-        st.subheader("Reservoir Attribute Analytics")
+        st.subheader("Frequency & Attribute Analytics")
         
-        c1, c2 = st.columns([2, 1])
+        c1, c2 = st.columns(2)
         
         with c1:
-            # Amplitude vs Depth Cross-Plot
-            fig_cross = px.scatter(
-                st.session_state['picks'],
-                x="Time",
-                y="Amplitude",
-                color="Horizon",
-                title="Amplitude vs. Time (Depth) Distribution",
-                template="plotly_dark",
-                trendline="ols" # Adds a trendline to see decay or brightening
-            )
+            # Cross-Plot
+            fig_cross = px.scatter(st.session_state['picks'], x="Time", y="Amplitude", color="Horizon",
+                                 title="Amplitude vs. Time Distribution", template="plotly_dark", trendline="ols")
             st.plotly_chart(fig_cross, use_container_width=True)
             
         with c2:
-            st.write("**Pick Statistics**")
-            st.dataframe(st.session_state['picks'].describe()[['Amplitude', 'Time']], use_container_width=True)
+            # Frequency Spectrum Logic
+            # Take the first selected trace as a representative sample for the spectrum
+            sample_trace_idx = int(st.session_state['picks'].iloc[-1]['Trace'])
+            trace_data = data_to_plot[:, sample_trace_idx]
             
-            csv = st.session_state['picks'].to_csv(index=False).encode('utf-8')
-            st.download_button("Export Pick Data (CSV)", csv, "seismic_picks.csv", "text/csv", use_container_width=True)
+            N = len(trace_data)
+            yf = fft(trace_data)
+            xf = fftfreq(N, dt)[:N//2]
+            psd = 2.0/N * np.abs(yf[0:N//2])
+            
+            fig_spec = go.Figure()
+            fig_spec.add_trace(go.Scatter(x=xf, y=psd, mode='lines', line=dict(color='#58a6ff', width=2)))
+            fig_spec.update_layout(
+                title=f"Power Spectrum (Trace {sample_trace_idx})",
+                xaxis_title="Frequency (Hz)", yaxis_title="Relative Amplitude",
+                template="plotly_dark", xaxis_range=[0, 80] # Typical seismic bandwidth
+            )
+            st.plotly_chart(fig_spec, use_container_width=True)
 
 else:
     st.title("SeismicFlow Analytics")
-    st.markdown("### Professional Seismic Interpretation Platform")
-    st.info("Upload a .segy volume or use the Demo Data button in the sidebar to initialize the workstation.")
+    st.info("Upload a .segy volume or use the Demo Data button to initialize.")
