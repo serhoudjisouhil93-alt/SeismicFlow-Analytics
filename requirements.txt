@@ -1,5 +1,9 @@
 streamlit
 segyio
 numpy
-matplotlib
 plotly
+pandas
+scipy
+google-generativeai
+statsmodels
+matplotlib
