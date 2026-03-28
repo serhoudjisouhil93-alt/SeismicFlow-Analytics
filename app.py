@@ -45,7 +45,7 @@ st.sidebar.subheader("Resources")
 st.sidebar.info("To test this application without a local file, download the sample SEGY data below.")
 
 # Button to link to a public seismic sample (e.g., USGS or F3)
-st.sidebar.link_button("Download Sample SEGY", "https://github.com/equinor/segyio-notebooks/raw/master/data/small.sgy")
+st.sidebar.link_button("Download Sample SEGY", "https://github.com/equinor/segyio-notebooks/raw/master/data/small.sgy?raw=true")
 
 # File Upload Logic
 uploaded_file = st.sidebar.file_uploader("Upload Seismic Volume (.segy / .sgy)", type=["segy", "sgy"])
