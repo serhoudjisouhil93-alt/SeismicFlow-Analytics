@@ -24,12 +24,13 @@ st.markdown("""
         letter-spacing: 1px;
     }
     .sub-brand { color: #8b949e; font-size: 14px; margin-bottom: 20px; }
+    .stMetric { background-color: #1c2128; padding: 15px; border-radius: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
-# Initialize Session State for Horizon Picking
+# Initialize Session State
 if 'picks' not in st.session_state:
-    st.session_state['picks'] = pd.DataFrame(columns=['Trace', 'Time', 'Horizon'])
+    st.session_state['picks'] = pd.DataFrame(columns=['Trace', 'Time', 'Amplitude', 'Horizon'])
 
 # Sidebar Branding
 st.sidebar.markdown('<div class="brand-text">SERHOUDJI</div>', unsafe_allow_html=True)
@@ -40,17 +41,18 @@ st.sidebar.divider()
 st.sidebar.subheader("Data Input")
 uploaded_file = st.sidebar.file_uploader("Upload Seismic Volume (.segy / .sgy)", type=["segy", "sgy"])
 
-# Fallback: Synthetic Data Generator
 if st.sidebar.button("Generate Demo Seismic Data"):
+    # Create a synthetic structured dataset
     t = np.linspace(0, 2000, 500)
-    data = np.random.normal(0, 0.1, (100, 500))
-    for i in range(5):
+    data = np.zeros((200, 500))
+    for i in range(8):
         depth = np.random.randint(50, 450)
-        data[:, depth:depth+10] += np.sin(2 * np.pi * 0.05 * t[depth:depth+10])
+        amp = np.random.uniform(0.5, 1.0)
+        data[:, depth:depth+8] += amp * np.sin(2 * np.pi * 0.04 * t[depth:depth+8])
     st.session_state['demo_data'] = data
     st.session_state['data_source'] = "Synthetic Demo"
 
-# Logic to choose data
+# Data Loading Logic
 data_to_plot = None
 if uploaded_file is not None:
     with open("temp_data.segy", "wb") as f:
@@ -59,67 +61,85 @@ if uploaded_file is not None:
         with segyio.open("temp_data.segy", "r", ignore_geometry=False) as f:
             data_to_plot = f.iline[f.ilines[len(f.ilines)//2]].T
     except:
-        st.error("Error reading file.")
+        st.error("Format Error.")
 elif 'demo_data' in st.session_state:
     data_to_plot = st.session_state['demo_data'].T
 
-# Main Dashboard
+# Main Workspace
 if data_to_plot is not None:
-    st.title("Seismic Interpretation Workstation")
+    st.title("Seismic Interpretation & Analytics")
     
-    col1, col2 = st.columns([1, 4])
+    col_tools, col_main = st.columns([1, 4])
     
-    with col1:
-        st.subheader("Interpretation Tools")
-        horizon_name = st.text_input("Horizon Name", "Horizon_A")
-        if st.button("Clear All Picks"):
-            st.session_state['picks'] = pd.DataFrame(columns=['Trace', 'Time', 'Horizon'])
+    with col_tools:
+        st.subheader("Controls")
+        horizon_name = st.text_input("Active Horizon", "Target_Reservoir")
+        
+        if st.button("Reset Session"):
+            st.session_state['picks'] = pd.DataFrame(columns=['Trace', 'Time', 'Amplitude', 'Horizon'])
             st.rerun()
-        
-        st.divider()
-        st.write("**Instructions:**")
-        st.write("1. Use the Box Select tool on the chart.")
-        st.write("2. Selected points will be saved to your horizon table.")
-        
-    with col2:
-        # Normalize Data
+            
+        st.info("Tip: Use the 'Box Select' or 'Lasso' tool on the right to pick reflectors.")
+
+    with col_main:
         vm = np.percentile(data_to_plot, 98)
         
-        # Create Plotly Heatmap
-        fig = px.imshow(
+        # Main Seismic Plot
+        fig_seismic = px.imshow(
             data_to_plot,
             color_continuous_scale='RdBu',
             zmin=-vm, zmax=vm,
-            labels=dict(x="Trace Index", y="Time (ms)", color="Amplitude"),
+            labels=dict(x="Trace Index", y="Two-Way Time (ms)", color="Amplitude"),
             aspect='auto'
         )
-        
-        fig.update_layout(
-            template='plotly_dark',
-            margin=dict(l=20, r=20, t=40, b=20),
-            height=600
-        )
+        fig_seismic.update_layout(template='plotly_dark', height=550, margin=dict(l=10, r=10, t=30, b=10))
 
-        # Handle Selection Events
-        selected_points = st.plotly_chart(fig, on_select="rerun", key="seismic_plot")
+        # Event Capture
+        event_data = st.plotly_chart(fig_seismic, on_select="rerun", key="seismic_plot", use_container_width=True)
         
-        if selected_points and "selection" in selected_points:
-            new_points = selected_points["selection"]["points"]
-            if new_points:
-                temp_df = pd.DataFrame([
-                    {'Trace': p['x'], 'Time': p['y'], 'Horizon': horizon_name} 
-                    for p in new_points
-                ])
-                st.session_state['picks'] = pd.concat([st.session_state['picks'], temp_df]).drop_duplicates()
+        if event_data and "selection" in event_data:
+            points = event_data["selection"]["points"]
+            if points:
+                new_picks = []
+                for p in points:
+                    # Capture coordinate and the specific amplitude value at that point
+                    trace_idx = int(p['x'])
+                    time_idx = int(p['y'])
+                    # We need to map time_idx to the actual array index safely
+                    val = data_to_plot[time_idx, trace_idx]
+                    new_picks.append({'Trace': trace_idx, 'Time': time_idx, 'Amplitude': val, 'Horizon': horizon_name})
+                
+                new_df = pd.DataFrame(new_picks)
+                st.session_state['picks'] = pd.concat([st.session_state['picks'], new_df]).drop_duplicates()
 
-    # Display Horizon Table
+    # Analytics Section (Only shows if data is picked)
     if not st.session_state['picks'].empty:
         st.divider()
-        st.subheader("Export Interpretation")
-        st.dataframe(st.session_state['picks'], use_container_width=True)
-        csv = st.session_state['picks'].to_csv(index=False).encode('utf-8')
-        st.download_button("Download CSV Horizon", csv, "interpreted_horizon.csv", "text/csv")
+        st.subheader("Reservoir Attribute Analytics")
+        
+        c1, c2 = st.columns([2, 1])
+        
+        with c1:
+            # Amplitude vs Depth Cross-Plot
+            fig_cross = px.scatter(
+                st.session_state['picks'],
+                x="Time",
+                y="Amplitude",
+                color="Horizon",
+                title="Amplitude vs. Time (Depth) Distribution",
+                template="plotly_dark",
+                trendline="ols" # Adds a trendline to see decay or brightening
+            )
+            st.plotly_chart(fig_cross, use_container_width=True)
+            
+        with c2:
+            st.write("**Pick Statistics**")
+            st.dataframe(st.session_state['picks'].describe()[['Amplitude', 'Time']], use_container_width=True)
+            
+            csv = st.session_state['picks'].to_csv(index=False).encode('utf-8')
+            st.download_button("Export Pick Data (CSV)", csv, "seismic_picks.csv", "text/csv", use_container_width=True)
 
 else:
     st.title("SeismicFlow Analytics")
-    st.info("Upload a .segy file or generate demo data to begin picking horizons.")
+    st.markdown("### Professional Seismic Interpretation Platform")
+    st.info("Upload a .segy volume or use the Demo Data button in the sidebar to initialize the workstation.")
